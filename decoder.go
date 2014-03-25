@@ -156,7 +156,7 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, needIndent, 
 		}
 
 	default:
-		d.error(name, "expect object type, but "+val.Type().String())
+		d.error(name, "unsupported type "+val.Type().String())
 
 	}
 }
