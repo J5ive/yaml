@@ -7,7 +7,7 @@ import (
 
 func assertEqual(t *testing.T, x, y interface{}) {
 	if !reflect.DeepEqual(x, y) {
-		t.Errorf("Assert fail: \nExpect: %v\nObtain: %v\n", x, y)
+		t.Errorf("Assert fail! \nExpect: %v\nObtain: %v\n", x, y)
 	}
 }
 
@@ -31,7 +31,7 @@ E :
   - 3 #comment
 
 
-`))
+`)
 
 	var s struct {
 		A int 		`yaml:"a"`
