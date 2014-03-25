@@ -1,12 +1,11 @@
 yaml
 ====
 
-Another Go YAML Parser for Simple YAML. 
 
 Introduction
 ------------
 
-A simplified YAML parser for configuration file.
+A simplified YAML parser written in Go for configuration file.
 It only implements a subset of YAML.
 
 **Supported type:**
