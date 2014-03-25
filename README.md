@@ -31,7 +31,7 @@ Example
 	var config struct {
 		Name string   `yaml:"name"`
 		Id int        `yaml:"id"`
-    		Tasks []string  `yaml:"tasks"`
+    	Tasks []string  `yaml:"tasks"`
 	}
   
 	err := yaml.ReadFile("config.yaml", &config)
