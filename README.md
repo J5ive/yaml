@@ -22,28 +22,23 @@ It only implements a subset of YAML.
 - Document marker;
 - Inline format (json pattern);
 - Quoted scalar;
-- Multi-line scalar doesn't recognize comment.
+- Comment in multi-line scalar.
 
 
 Example
 ------
 
-
-	type Config struct {
+	var config struct {
 		Name string   `yaml:"name"`
 		Id int        `yaml:"id"`
-    	Tasks []string  `yaml:"tasks"`
+    		Tasks []string  `yaml:"tasks"`
 	}
   
-	func main() {
-		var config Config
-		err := yaml.ReadFile("config.yaml", &config)
-		if err != nil {
-			println(err.Error())
-			return
-		}
-    
-		println(config.Name)
-		// ...
+	err := yaml.ReadFile("config.yaml", &config)
+	if err != nil {
+		println(err.Error())
+		return
 	}
-	
+    
+	println(config.Name)
+
