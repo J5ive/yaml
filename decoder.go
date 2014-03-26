@@ -14,7 +14,7 @@ Unsupported specification:
 	- Document marker ( --- );
 	- Inline format (json pattern);
 	- Quoted scalar;
-	- Multi-line scalar doesn't recognize comment. For example:
+	- Comment in Multi-line scalar. For example:
 
 		OK: # this is comment
 		  This is
@@ -84,7 +84,7 @@ func (d *Decoder) error(name, info string) {
 	panic(fmt.Errorf("%s %s at %d", name, info, d.off))
 }
 
-func (d *Decoder) value(name string, val reflect.Value, indent int, needIndent, lineSkipped bool) {
+func (d *Decoder) value(name string, val reflect.Value, indent int, indentFirst, lineSkipped bool) {
 	switch val.Kind() {
 	case reflect.Int:
 		val.SetInt(d.int(name, indent, 0))
@@ -115,7 +115,7 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, needIndent, 
 			val.Set(reflect.MakeSlice(t, 0, 0))
 		}*/
 
-		ok := d.sliceElem(name, val, elemType, indent, needIndent)
+		ok := d.sliceElem(name, val, elemType, indent, indentFirst)
 		for ok {
 			ok = d.sliceElem(name, val, elemType, indent, true)
 		}
@@ -131,9 +131,14 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, needIndent, 
 			val.Set(reflect.MakeMap(t))
 		}
 
-		key := d.key(indent, needIndent)
+		var elem reflect.Value
+		key := d.key(indent, indentFirst)
 		for key != "" {
-			elem := reflect.New(elemType).Elem()
+			if !elem.IsValid() {
+				elem = reflect.New(elemType).Elem()
+			} else {
+				elem.Set(reflect.Zero(elemType))
+			}
 			d.value(key, elem, indent+2, true, true)
 			val.SetMapIndex(reflect.ValueOf(key), elem)
 			key = d.key(indent, true)
@@ -145,7 +150,7 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, needIndent, 
 		}
 
 		fields := structFileds(val)
-		key := d.key(indent, needIndent)
+		key := d.key(indent, indentFirst)
 		for key != "" {
 			if f, ok := fields[key]; ok {
 				d.value(key, f, indent+2, true, true)
@@ -161,8 +166,8 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, needIndent, 
 	}
 }
 
-func (d *Decoder) key(indent int, needIndent bool) string {
-	if needIndent && !d.tryLine(indent) {
+func (d *Decoder) key(indent int, indentFirst bool) string {
+	if !d.tryLine(indent, indentFirst) {
 		return ""
 	}
 
@@ -180,12 +185,21 @@ func (d *Decoder) key(indent int, needIndent bool) string {
 	return ""
 }
 
-func (d *Decoder) tryLine(indent int) bool {
+func (d *Decoder) tryLine(indent int, indentFirst bool) bool {
 	var line []byte
 	var pos int
+
+	if !indentFirst {
+		line, pos = d.peekLine()
+		if len(bytes.TrimSpace(line)) != 0 {
+			return true
+		}
+		d.off = pos
+	}
+
 	for {
 		line, pos = d.peekLine()
-		if d.off == pos {
+		if d.off == pos { // at Eof
 			return false
 		}
 		if len(bytes.TrimSpace(line)) != 0 {
@@ -238,8 +252,8 @@ func hasIndent(line []byte, indent int) bool {
 	return true
 }
 
-func (d *Decoder) sliceElem(name string, slice reflect.Value, elemType reflect.Type, indent int, needIndent bool) (ok bool) {
-	if (!needIndent || d.tryLine(indent)) && d.data[d.off] == '-' {
+func (d *Decoder) sliceElem(name string, slice reflect.Value, elemType reflect.Type, indent int, indentFirst bool) (ok bool) {
+	if d.tryLine(indent, indentFirst) && d.data[d.off] == '-' {
 		d.off++
 		if d.off < len(d.data) && d.data[d.off] == ' ' {
 			d.off++
