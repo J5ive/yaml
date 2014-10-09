@@ -126,7 +126,7 @@ func (e *Encoder) value(val reflect.Value, indent, state int) {
 				} else {
 					if i := strings.Index(name, ","); i != -1 {
 						if strings.Index(name, "omitempty") != -1 {
-							switch f.Kind {
+							switch fv.Kind() {
 							case reflect.Array, reflect.Slice, reflect.Map, reflect.String:
 								if fv.Len() == 0 {
 									continue
