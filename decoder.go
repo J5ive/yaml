@@ -34,6 +34,7 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 func Unmarshal(data []byte, v interface{}) error {
@@ -76,7 +77,7 @@ func (d *Decoder) Decode(i interface{}) (err error) {
 	if val.Kind() != reflect.Ptr || val.IsNil() {
 		d.error("", "expect ptr")
 	}
-	d.value("", val.Elem(), 0, true, false)
+	d.value("", val.Elem(), 0, stateDefault)
 	return
 }
 
@@ -84,27 +85,42 @@ func (d *Decoder) error(name, info string) {
 	panic(fmt.Errorf("%s %s at %d", name, info, d.off))
 }
 
-func (d *Decoder) value(name string, val reflect.Value, indent int, indentFirst, lineSkipped bool) {
+// parse state
+const (
+	stateDefault = iota
+	stateListElem		// Maybe there is no ident
+	stateObjectValue	// The left of current line may be ignored.
+)
+
+func (d *Decoder) value(name string, val reflect.Value, indent, state int) {
 	switch val.Kind() {
-	case reflect.Int:
-		val.SetInt(d.int(name, indent, 0))
-
-	case reflect.Int64:
-		val.SetInt(d.int(name, indent, 64))
-
-	case reflect.Float64:
-		i, err := strconv.ParseFloat(d.string(indent), 64)
+	case reflect.Int, reflect.Int64:
+		i, err := strconv.ParseInt(d.string(indent), 10, val.Type().Bits())
 		if err != nil {
 			d.error(name, err.Error())
 		}
-		val.SetFloat(i)
+		val.SetInt(i)
+
+	case reflect.Float64:
+		f, err := strconv.ParseFloat(d.string(indent), 64)
+		if err != nil {
+			d.error(name, err.Error())
+		}
+		val.SetFloat(f)
 
 	case reflect.String:
 		val.SetString(d.string(indent))
 
+	case reflect.Bool:
+		b, err := strconv.ParseBool(d.string(indent))
+		if err != nil {
+			d.error(name, err.Error())
+		}
+		val.SetBool(b)
+
 	case reflect.Slice:
-		if lineSkipped {
-			d.skipLine()
+		if state == stateObjectValue {
+			d.nextLine()
 		}
 
 		t := val.Type()
@@ -115,14 +131,14 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, indentFirst,
 			val.Set(reflect.MakeSlice(t, 0, 0))
 		}*/
 
-		ok := d.sliceElem(name, val, elemType, indent, indentFirst)
+		ok := d.sliceElem(name, val, elemType, indent, state)
 		for ok {
-			ok = d.sliceElem(name, val, elemType, indent, true)
+			ok = d.sliceElem(name, val, elemType, indent, stateDefault)
 		}
 
 	case reflect.Map:
-		if lineSkipped {
-			d.skipLine()
+		if state == stateObjectValue {
+			d.nextLine()
 		}
 
 		t := val.Type()
@@ -132,32 +148,32 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, indentFirst,
 		}
 
 		var elem reflect.Value
-		key := d.key(indent, indentFirst)
+		key := d.key(name, indent, state)
 		for key != "" {
 			if !elem.IsValid() {
 				elem = reflect.New(elemType).Elem()
 			} else {
 				elem.Set(reflect.Zero(elemType))
 			}
-			d.value(key, elem, indent+2, true, true)
+			d.value(key, elem, indent+2, stateObjectValue)
 			val.SetMapIndex(reflect.ValueOf(key), elem)
-			key = d.key(indent, true)
+			key = d.key(name, indent, stateDefault)
 		}
 
 	case reflect.Struct:
-		if lineSkipped {
-			d.skipLine()
+		if state == stateObjectValue {
+			d.nextLine()
 		}
 
 		fields := structFileds(val)
-		key := d.key(indent, indentFirst)
+		key := d.key(name, indent, state)
 		for key != "" {
 			if f, ok := fields[key]; ok {
-				d.value(key, f, indent+2, true, true)
+				d.value(key, f, indent+2, stateObjectValue)
 			} else {
 				d.error(name, "undefined field "+key)
 			}
-			key = d.key(indent, true)
+			key = d.key(name, indent, stateDefault)
 		}
 
 	default:
@@ -166,9 +182,13 @@ func (d *Decoder) value(name string, val reflect.Value, indent int, indentFirst,
 	}
 }
 
-func (d *Decoder) key(indent int, indentFirst bool) string {
-	if !d.tryLine(indent, indentFirst) {
+func (d *Decoder) key(name string, indent, state int) string {
+	if !d.tryLine(indent, state) {
 		return ""
+	}
+
+	if d.off < len(d.data) && d.data[d.off] == '"' {
+		return d.quotedKey(name)
 	}
 
 	for i := d.off; i < len(d.data); i++ {
@@ -181,15 +201,51 @@ func (d *Decoder) key(indent int, indentFirst bool) string {
 			break
 		}
 	}
-	//d.error("expect key")
+
+	d.error(name, "expect key")
 	return ""
 }
 
-func (d *Decoder) tryLine(indent int, indentFirst bool) bool {
+func (d *Decoder) quotedKey(name string) string {
+LOOP:
+	for i := d.off+1; i < len(d.data); i++ {
+		switch c := d.data[i]; c {
+		case '\n':
+			break LOOP
+
+		case '\\':
+			i++
+			if i>=len(d.data) {
+				break LOOP
+			}
+
+		case '"':
+			key, err := strconv.Unquote(string(d.data[d.off:i+1]))
+			if err != nil {
+				d.error(name, err.Error())
+			}
+			for i++; i<len(d.data); i++ {
+				switch c = d.data[i]; c {
+				case ' ', '\t':
+
+				case ':':
+					d.off = i+1; return key
+				default:
+					break LOOP
+				}
+			}
+		}
+	}
+
+	d.error(name, "expect key")
+	return ""
+}
+
+func (d *Decoder) tryLine(indent, state int) bool {
 	var line []byte
 	var pos int
 
-	if !indentFirst {
+	if state == stateListElem {
 		line, pos = d.peekLine()
 		if len(bytes.TrimSpace(line)) != 0 {
 			return true
@@ -231,7 +287,7 @@ func (d *Decoder) peekLine() ([]byte, int) {
 	return d.data[d.off:end], len(d.data)
 }
 
-func (d *Decoder) skipLine() {
+func (d *Decoder) nextLine() {
 	for ; d.off < len(d.data); d.off++ {
 		if d.data[d.off] == '\n' {
 			d.off++
@@ -252,26 +308,19 @@ func hasIndent(line []byte, indent int) bool {
 	return true
 }
 
-func (d *Decoder) sliceElem(name string, slice reflect.Value, elemType reflect.Type, indent int, indentFirst bool) (ok bool) {
-	if d.tryLine(indent, indentFirst) && d.data[d.off] == '-' {
+func (d *Decoder) sliceElem(name string, slice reflect.Value, elemType reflect.Type, indent, state int) (ok bool) {
+	if d.tryLine(indent, state) && d.data[d.off] == '-' {
 		d.off++
 		if d.off < len(d.data) && d.data[d.off] == ' ' {
 			d.off++
 		}
 		slice.Set(reflect.Append(slice, reflect.Zero(elemType)))
-		d.value(name, slice.Index(slice.Len()-1), indent+2, false, false)
+		d.value(name, slice.Index(slice.Len()-1), indent+2, stateListElem)
 		ok = true
 	}
 	return
 }
 
-func (d *Decoder) int(name string, indent, bitSize int) int64 {
-	i, err := strconv.ParseInt(d.string(indent), 10, bitSize)
-	if err != nil {
-		d.error(name, err.Error())
-	}
-	return i
-}
 
 // multi-line string mode
 const (
@@ -281,15 +330,15 @@ const (
 )
 
 func (d *Decoder) string(indent int) string {
-	if d.off < len(d.data) {
-		c := d.data[d.off]
-		for c == ' ' && d.off < len(d.data) {
-			d.off++
-			c = d.data[d.off]
-		}
-		switch c {
-		case '#', '\n':
-			return d.strMultiLine(indent, strDefault)
+	line, pos := d.peekLine()
+	line = bytes.TrimSpace(line)
+	d.off = pos
+
+	if len(line) == 0 {
+		return d.strMultiLine(indent, strDefault)
+	}
+	if len(line) == 1 {
+		switch line[0] {
 		case '>':
 			return d.strMultiLine(indent, strFolded)
 		case '|':
@@ -297,26 +346,12 @@ func (d *Decoder) string(indent int) string {
 		}
 	}
 
-	start, end := d.off, len(d.data)
-LOOP:
-	for ; d.off < len(d.data); d.off++ {
-		switch d.data[d.off] {
-		case '\n':
-			if end == len(d.data) {
-				end = d.off
-			}
-			d.off++
-			break LOOP
-		case '#':
-			end = d.off
-		}
-	}
-	return string(bytes.TrimSpace(d.data[start:end]))
+	// Thinking:
+	// return string(line) + d.strMultiLine(indent, strDefault)
+	return string(line)
 }
 
 func (d *Decoder) strMultiLine(indent, mode int) string {
-	d.skipLine()
-
 	var buf bytes.Buffer
 	needSpace, ln := false, 0
 
@@ -390,6 +425,10 @@ func structFileds(val reflect.Value) map[string]reflect.Value {
 			name = f.Tag.Get("yaml")
 			if name == "" {
 				name = f.Name
+			} else {
+				if i := strings.Index(name, ","); i != -1 {
+					name = name[:i]
+				}
 			}
 			m[name] = val.Field(i)
 		}
